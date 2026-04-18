@@ -136,6 +136,50 @@ The same flow is available as a script:
 
         scripts/update-sec-db data/ephemeris.db --limit 100
 
+For a larger database, use the batch scripts:
+
+        export EPHEMERIS_USER_AGENT='name email@example.com'
+        export EPHEMERIS_SEC_BATCH=500
+
+        scripts/build-sec-db data/ephemeris-sec.db
+
+This initializes the database, loads the full SEC company ticker feed, then
+walks submissions in batches using --offset and --limit.  To include compact
+companyfacts, set:
+
+        export EPHEMERIS_SEC_FACTS=1
+
+Companyfacts is one SEC request per CIK and is much slower than submissions.
+
+For continuing updates:
+
+        export EPHEMERIS_SEC_STALE_DAYS=1
+        scripts/refresh-sec-db data/ephemeris-sec.db
+
+refresh-sec-db reloads the SEC company ticker feed, then updates submissions
+whose sec_sync_state row is missing or older than EPHEMERIS_SEC_STALE_DAYS.
+With EPHEMERIS_SEC_FACTS=1, it applies the same stale rule to companyfacts.
+
+The batch controls are also available directly:
+
+        ./ephemeris sec sync-submissions \
+                --db data/ephemeris-sec.db \
+                --offset 5000 \
+                --limit 500
+
+        ./ephemeris sec sync-submissions \
+                --db data/ephemeris-sec.db \
+                --limit 500 \
+                --stale-days 1
+
+The sec_sync_state table stores submissions_synced_at, facts_synced_at, and
+last_error by CIK.  All SEC loaders are idempotent: rerunning a batch updates
+existing rows rather than duplicating filings or facts.
+
+One simple daily cron entry is:
+
+        15 2 * * * cd /path/to/ephemeris && EPHEMERIS_USER_AGENT='name email@example.com' scripts/refresh-sec-db data/ephemeris-sec.db >> data/sec-refresh.log 2>&1
+
 The submissions command resolves tickers through the SEC company ticker feed,
 downloads submission JSON, stores company records, and stores recent filings.
 

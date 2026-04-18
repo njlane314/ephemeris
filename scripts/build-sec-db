@@ -1,0 +1,33 @@
+#!/bin/sh
+set -eu
+
+db=${1:-data/ephemeris-sec.db}
+batch=${EPHEMERIS_SEC_BATCH:-500}
+facts=${EPHEMERIS_SEC_FACTS:-0}
+
+if [ -z "${EPHEMERIS_USER_AGENT:-}" ]; then
+        echo "set EPHEMERIS_USER_AGENT before using SEC commands" >&2
+        exit 1
+fi
+
+./ephemeris db init --db "$db" >/dev/null
+./ephemeris sec sync-companies --db "$db"
+
+total=$(sqlite3 "$db" 'select count(*) from companies;')
+offset=0
+while [ "$offset" -lt "$total" ]; do
+        echo "sync submissions offset=$offset limit=$batch total=$total" >&2
+        ./ephemeris sec sync-submissions --db "$db" --offset "$offset" --limit "$batch"
+        offset=$((offset + batch))
+done
+
+if [ "$facts" = 1 ]; then
+        offset=0
+        while [ "$offset" -lt "$total" ]; do
+                echo "sync companyfacts offset=$offset limit=$batch total=$total" >&2
+                ./ephemeris sec sync-companyfacts --db "$db" --offset "$offset" --limit "$batch"
+                offset=$((offset + batch))
+        done
+fi
+
+sqlite3 "$db" 'select "companies", count(*) from companies union all select "filings", count(*) from filings union all select "facts", count(*) from facts;'

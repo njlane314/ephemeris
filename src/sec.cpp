@@ -83,6 +83,14 @@ static std::vector<SecCompany> fetch_sec_companies() {
     return out;
 }
 
+static int arg_offset(const Args& a) {
+    return std::max(0, a.geti("offset", 0));
+}
+
+static int arg_limit(const Args& a) {
+    return std::max(0, a.geti("limit", 0));
+}
+
 static std::unordered_map<std::string, SecCompany> sec_company_map(const std::vector<SecCompany>& companies) {
     std::unordered_map<std::string, SecCompany> out;
     for (const SecCompany& c : companies) out[c.ticker] = c;
@@ -103,14 +111,17 @@ static void record_identifier_history(Db& db, const SecCompany& c, const std::st
 void sync_companies(const Args& a) {
     Db db(db_path(a));
     init_schema(db);
-    int limit = a.geti("limit", 0);
+    int limit = arg_limit(a);
+    int offset = arg_offset(a);
     std::string asof = a.get("asof");
 
     auto companies = fetch_sec_companies();
     long long rows = 0;
+    long long seen = 0;
     db.exec("begin");
     try {
         for (const SecCompany& c : companies) {
+            if (seen++ < offset) continue;
             if (limit && rows >= limit) break;
             upsert_company(db, c.cik, c.ticker, c.name, c.exchange, "", "");
             record_identifier_history(db, c, asof);
@@ -121,16 +132,26 @@ void sync_companies(const Args& a) {
         db.exec("rollback");
         throw;
     }
-    std::cout << "companies\t" << rows << "\nsecurity_identifier_history\t" << rows << "\n";
+    std::cout << "companies\t" << rows << "\noffset\t" << offset
+              << "\nsecurity_identifier_history\t" << rows << "\n";
 }
 
-static std::vector<SecCompany> db_companies(Db& db, int limit) {
+static std::vector<SecCompany> db_companies(Db& db, int limit, int offset, int stale_days, const std::string& kind) {
     std::vector<SecCompany> out;
-    auto st = db.prepare(
-        "select cik,coalesce(ticker,''),coalesce(name,''),coalesce(exchange,'')"
-        " from companies where cik is not null and cik>0 order by cik");
+    std::string stale_col = kind == "facts" ? "facts_synced_at" : "submissions_synced_at";
+    std::string sql =
+        "select c.cik,coalesce(c.ticker,''),coalesce(c.name,''),coalesce(c.exchange,'')"
+        " from companies c left join sec_sync_state s on s.cik=c.cik"
+        " where c.cik is not null and c.cik>0";
+    if (stale_days > 0) {
+        sql += " and (s." + stale_col + " is null or s." + stale_col + " < datetime('now', '-"
+             + std::to_string(stale_days) + " days'))";
+    }
+    sql += " order by c.cik";
+    if (limit > 0) sql += " limit " + std::to_string(limit);
+    if (offset > 0) sql += " offset " + std::to_string(offset);
+    auto st = db.prepare(sql);
     while (st.step()) {
-        if (limit && static_cast<int>(out.size()) >= limit) break;
         SecCompany c;
         c.cik = st.i64(0);
         c.ticker = upper(st.text(1));
@@ -142,13 +163,17 @@ static std::vector<SecCompany> db_companies(Db& db, int limit) {
 }
 
 static std::vector<SecCompany> submission_targets(Db& db, const Args& a) {
-    int limit = a.geti("limit", 0);
-    if (!a.has("universe")) return db_companies(db, limit);
+    int limit = arg_limit(a);
+    int offset = arg_offset(a);
+    int stale_days = a.geti("stale-days", 0);
+    if (!a.has("universe")) return db_companies(db, limit, offset, stale_days, "submissions");
 
     auto wanted = read_universe_file(a.get("universe"));
     auto map = sec_company_map(fetch_sec_companies());
     std::vector<SecCompany> out;
+    int seen = 0;
     for (const std::string& ticker : wanted) {
+        if (seen++ < offset) continue;
         if (limit && static_cast<int>(out.size()) >= limit) break;
         auto it = map.find(ticker);
         if (it == map.end()) {
@@ -158,6 +183,28 @@ static std::vector<SecCompany> submission_targets(Db& db, const Args& a) {
         out.push_back(it->second);
     }
     return out;
+}
+
+static void mark_submissions_synced(Db& db, long long cik, const std::string& error = "") {
+    auto st = db.prepare(
+        "insert into sec_sync_state(cik,submissions_synced_at,last_error)"
+        " values(?,datetime('now'),?)"
+        " on conflict(cik) do update set"
+        " submissions_synced_at=excluded.submissions_synced_at,last_error=excluded.last_error");
+    st.bind64(1, cik);
+    st.bind(2, error);
+    st.run();
+}
+
+static void mark_facts_synced(Db& db, long long cik, const std::string& error = "") {
+    auto st = db.prepare(
+        "insert into sec_sync_state(cik,facts_synced_at,last_error)"
+        " values(?,datetime('now'),?)"
+        " on conflict(cik) do update set"
+        " facts_synced_at=excluded.facts_synced_at,last_error=excluded.last_error");
+    st.bind64(1, cik);
+    st.bind(2, error);
+    st.run();
 }
 
 void sync_submissions(const Args& a) {
@@ -184,6 +231,7 @@ void sync_submissions(const Args& a) {
                 sub = parse_json(http_get("https://data.sec.gov/submissions/CIK" + cik10(c.cik) + ".json"));
             } catch (const std::exception& e) {
                 std::cerr << "sync_error\t" << c.ticker << "\t" << e.what() << "\n";
+                mark_submissions_synced(db, c.cik, e.what());
                 continue;
             }
             std::string name = sub.get("name").str().empty() ? c.name : sub.get("name").str();
@@ -219,19 +267,23 @@ void sync_submissions(const Args& a) {
                 filing.run();
                 ++filings;
             }
+            mark_submissions_synced(db, c.cik);
         }
         db.exec("commit");
     } catch (...) {
         db.exec("rollback");
         throw;
     }
-    std::cout << "companies\t" << companies << "\nfilings\t" << filings << "\n";
+    std::cout << "companies\t" << companies << "\noffset\t" << arg_offset(a)
+              << "\nfilings\t" << filings << "\n";
 }
 
 void sync_companyfacts(const Args& a) {
     Db db(db_path(a));
     init_schema(db);
-    int limit = a.geti("limit", 0);
+    int limit = arg_limit(a);
+    int offset = arg_offset(a);
+    int stale_days = a.geti("stale-days", 0);
     std::set<std::string> tags = {
         "Revenues",
         "RevenueFromContractWithCustomerExcludingAssessedTax",
@@ -249,7 +301,17 @@ void sync_companyfacts(const Args& a) {
     };
 
     std::vector<long long> ciks;
-    auto q = db.prepare("select cik from companies order by cik");
+    std::string sql =
+        "select c.cik from companies c left join sec_sync_state s on s.cik=c.cik"
+        " where c.cik is not null and c.cik>0";
+    if (stale_days > 0) {
+        sql += " and (s.facts_synced_at is null or s.facts_synced_at < datetime('now', '-"
+             + std::to_string(stale_days) + " days'))";
+    }
+    sql += " order by c.cik";
+    if (limit > 0) sql += " limit " + std::to_string(limit);
+    if (offset > 0) sql += " offset " + std::to_string(offset);
+    auto q = db.prepare(sql);
     while (q.step()) ciks.push_back(q.i64(0));
 
     auto ins = db.prepare(
@@ -271,6 +333,7 @@ void sync_companyfacts(const Args& a) {
                 root = parse_json(http_get("https://data.sec.gov/api/xbrl/companyfacts/CIK" + cik10(cik) + ".json"));
             } catch (const std::exception& e) {
                 std::cerr << "facts_error\t" << cik << "\t" << e.what() << "\n";
+                mark_facts_synced(db, cik, e.what());
                 continue;
             }
             const Json& gaap = root.get("facts").get("us-gaap");
@@ -304,13 +367,14 @@ void sync_companyfacts(const Args& a) {
                     }
                 }
             }
+            mark_facts_synced(db, cik);
         }
         db.exec("commit");
     } catch (...) {
         db.exec("rollback");
         throw;
     }
-    std::cout << "companies\t" << processed << "\nfacts\t" << rows << "\n";
+    std::cout << "companies\t" << processed << "\noffset\t" << offset << "\nfacts\t" << rows << "\n";
 }
 
 void update_sec_database(const Args& a) {

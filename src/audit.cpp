@@ -38,6 +38,7 @@ void command_audit_database(const Args& a) {
     print_count(db, "regime_outputs", "regime_outputs");
     print_count(db, "regime_models", "regime_models");
     print_count(db, "transaction_cost_models", "transaction_cost_models");
+    print_count(db, "sec_sync_state", "sec_sync_state");
 
     std::cout << "issue_universe_without_price\t"
               << scalar_i64(db,

@@ -292,6 +292,13 @@ create table if not exists security_identifier_history (
 create index if not exists security_identifier_history_lookup_idx
 on security_identifier_history(ticker, valid_from, valid_to);
 
+create table if not exists sec_sync_state (
+    cik integer primary key,
+    submissions_synced_at text,
+    facts_synced_at text,
+    last_error text not null default ''
+);
+
 create table if not exists delistings (
     ticker text primary key,
     delist_date text not null,

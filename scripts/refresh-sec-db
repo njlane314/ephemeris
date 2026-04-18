@@ -1,0 +1,38 @@
+#!/bin/sh
+set -eu
+
+db=${1:-data/ephemeris-sec.db}
+batch=${EPHEMERIS_SEC_BATCH:-500}
+stale_days=${EPHEMERIS_SEC_STALE_DAYS:-1}
+facts=${EPHEMERIS_SEC_FACTS:-0}
+
+if [ -z "${EPHEMERIS_USER_AGENT:-}" ]; then
+        echo "set EPHEMERIS_USER_AGENT before using SEC commands" >&2
+        exit 1
+fi
+
+if [ "$stale_days" -lt 1 ]; then
+        echo "EPHEMERIS_SEC_STALE_DAYS must be at least 1" >&2
+        exit 1
+fi
+
+./ephemeris db init --db "$db" >/dev/null
+./ephemeris sec sync-companies --db "$db"
+
+while :; do
+        out=$(./ephemeris sec sync-submissions --db "$db" --limit "$batch" --stale-days "$stale_days")
+        printf '%s\n' "$out"
+        n=$(printf '%s\n' "$out" | awk '$1=="companies" {print $2}')
+        [ "${n:-0}" -eq 0 ] && break
+done
+
+if [ "$facts" = 1 ]; then
+        while :; do
+                out=$(./ephemeris sec sync-companyfacts --db "$db" --limit "$batch" --stale-days "$stale_days")
+                printf '%s\n' "$out"
+                n=$(printf '%s\n' "$out" | awk '$1=="companies" {print $2}')
+                [ "${n:-0}" -eq 0 ] && break
+        done
+fi
+
+sqlite3 "$db" 'select "companies", count(*) from companies union all select "filings", count(*) from filings union all select "facts", count(*) from facts;'
