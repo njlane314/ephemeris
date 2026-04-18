@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+
+db=${1:-data/ephemeris.db}
+shift || true
+
+./ephemeris db init --db "$db" >/dev/null
+./ephemeris sec update --db "$db" "$@"

@@ -8,8 +8,10 @@ R"(ephemeris: filing-aware momentum research system
 
 usage:
   ephemeris db init --db data/ephemeris.db
+  ephemeris sec sync-companies --db data/ephemeris.db [--asof YYYY-MM-DD] [--limit N]
   ephemeris sec sync-submissions --universe tickers.txt --db data/ephemeris.db [--limit N]
   ephemeris sec sync-companyfacts --db data/ephemeris.db [--limit N]
+  ephemeris sec update --db data/ephemeris.db [--limit N] [--facts]
   ephemeris securities import-history --input history.csv --db data/ephemeris.db
   ephemeris prices import --input prices.csv --db data/ephemeris.db
   ephemeris universe build --date YYYY-MM-DD [--min-market-cap N] [--min-adv N] [--min-price N] [--require-current-filing] --db DB
@@ -50,11 +52,13 @@ int run(int argc, char** argv) {
         return 0;
     }
     if (cmd == "sec") {
-        if (argc < 3) throw Error("usage: ephemeris sec <sync-submissions|sync-companyfacts>");
+        if (argc < 3) throw Error("usage: ephemeris sec <sync-companies|sync-submissions|sync-companyfacts|update>");
         std::string sub = argv[2];
         Args a = parse_args(argc, argv, 3);
-        if (sub == "sync-submissions") sync_submissions(a);
+        if (sub == "sync-companies") sync_companies(a);
+        else if (sub == "sync-submissions") sync_submissions(a);
         else if (sub == "sync-companyfacts") sync_companyfacts(a);
+        else if (sub == "update") update_sec_database(a);
         else throw Error("unknown sec command: " + sub);
         return 0;
     }

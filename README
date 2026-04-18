@@ -32,6 +32,10 @@ This builds the ephemeris executable in the source directory.
 This runs a deterministic fixture pipeline through the real command-line
 program and checks expected outputs.
 
+        make dist
+
+This creates dist/ephemeris-v0.1.0.tar.gz from the tracked source tree.
+
         make clean
 
 This removes generated build output.
@@ -40,8 +44,10 @@ This removes generated build output.
 SYNOPSIS
 
         ephemeris db init --db DB
+        ephemeris sec sync-companies --db DB
         ephemeris sec sync-submissions --universe FILE --db DB
         ephemeris sec sync-companyfacts --db DB
+        ephemeris sec update --db DB
         ephemeris securities import-history --input FILE --db DB
         ephemeris prices import --input FILE --db DB
         ephemeris universe build --date DATE --db DB
@@ -89,16 +95,46 @@ targets, backtest NAV, and backtest trades.
 
 SEC DATA
 
+Build or refresh the company and security master from SEC's public company
+ticker feed:
+
+        ./ephemeris sec sync-companies \
+                --db data/ephemeris.db
+
+This fetches:
+
+        https://www.sec.gov/files/company_tickers_exchange.json
+
+It writes companies, securities, and security_identifier_history.  Use --limit
+for a small trial database and --asof to set the valid_from date explicitly.
+
 Synchronize recent SEC submissions for a ticker list:
 
         ./ephemeris sec sync-submissions \
                 --universe data/universe/tickers.txt \
                 --db data/ephemeris.db
 
+If --universe is omitted, sync-submissions updates the companies already
+stored in the database.
+
 Synchronize compact company facts for known CIKs:
 
         ./ephemeris sec sync-companyfacts \
                 --db data/ephemeris.db
+
+Run a repeatable SEC update:
+
+        ./ephemeris sec update \
+                --db data/ephemeris.db \
+                --limit 100
+
+This runs sync-companies and sync-submissions.  Add --facts to also run
+sync-companyfacts.  A full --facts update can be slow because SEC companyfacts
+is one request per CIK.
+
+The same flow is available as a script:
+
+        scripts/update-sec-db data/ephemeris.db --limit 100
 
 The submissions command resolves tickers through the SEC company ticker feed,
 downloads submission JSON, stores company records, and stores recent filings.

@@ -55,7 +55,7 @@ struct SecCompany {
     std::string exchange;
 };
 
-static std::unordered_map<std::string, SecCompany> fetch_sec_company_map() {
+static std::vector<SecCompany> fetch_sec_companies() {
     std::string body = http_get("https://www.sec.gov/files/company_tickers_exchange.json");
     Json root = parse_json(body);
     std::unordered_map<std::string, int> fidx;
@@ -71,26 +71,100 @@ static std::unordered_map<std::string, SecCompany> fetch_sec_company_map() {
     int ticker_i = idx("ticker");
     int exchange_i = idx("exchange");
 
-    std::unordered_map<std::string, SecCompany> out;
+    std::vector<SecCompany> out;
     for (const Json& row : root.get("data").a) {
         SecCompany c;
         c.cik = static_cast<long long>(row.at(cik_i).num());
         c.name = row.at(name_i).str();
         c.ticker = upper(row.at(ticker_i).str());
         c.exchange = row.at(exchange_i).str();
-        if (!c.ticker.empty()) out[c.ticker] = c;
+        if (!c.ticker.empty()) out.push_back(c);
+    }
+    return out;
+}
+
+static std::unordered_map<std::string, SecCompany> sec_company_map(const std::vector<SecCompany>& companies) {
+    std::unordered_map<std::string, SecCompany> out;
+    for (const SecCompany& c : companies) out[c.ticker] = c;
+    return out;
+}
+
+static void record_identifier_history(Db& db, const SecCompany& c, const std::string& asof) {
+    auto st = db.prepare(
+        "insert into security_identifier_history(ticker,cik,valid_from,valid_to,source)"
+        " values(?,?,coalesce(nullif(?,''),date('now')),'','sec-company-tickers')"
+        " on conflict(ticker,valid_from,source) do update set cik=excluded.cik");
+    st.bind(1, c.ticker);
+    st.bind64(2, c.cik);
+    st.bind(3, asof);
+    st.run();
+}
+
+void sync_companies(const Args& a) {
+    Db db(db_path(a));
+    init_schema(db);
+    int limit = a.geti("limit", 0);
+    std::string asof = a.get("asof");
+
+    auto companies = fetch_sec_companies();
+    long long rows = 0;
+    db.exec("begin");
+    try {
+        for (const SecCompany& c : companies) {
+            if (limit && rows >= limit) break;
+            upsert_company(db, c.cik, c.ticker, c.name, c.exchange, "", "");
+            record_identifier_history(db, c, asof);
+            ++rows;
+        }
+        db.exec("commit");
+    } catch (...) {
+        db.exec("rollback");
+        throw;
+    }
+    std::cout << "companies\t" << rows << "\nsecurity_identifier_history\t" << rows << "\n";
+}
+
+static std::vector<SecCompany> db_companies(Db& db, int limit) {
+    std::vector<SecCompany> out;
+    auto st = db.prepare(
+        "select cik,coalesce(ticker,''),coalesce(name,''),coalesce(exchange,'')"
+        " from companies where cik is not null and cik>0 order by cik");
+    while (st.step()) {
+        if (limit && static_cast<int>(out.size()) >= limit) break;
+        SecCompany c;
+        c.cik = st.i64(0);
+        c.ticker = upper(st.text(1));
+        c.name = st.text(2);
+        c.exchange = st.text(3);
+        if (!c.ticker.empty()) out.push_back(c);
+    }
+    return out;
+}
+
+static std::vector<SecCompany> submission_targets(Db& db, const Args& a) {
+    int limit = a.geti("limit", 0);
+    if (!a.has("universe")) return db_companies(db, limit);
+
+    auto wanted = read_universe_file(a.get("universe"));
+    auto map = sec_company_map(fetch_sec_companies());
+    std::vector<SecCompany> out;
+    for (const std::string& ticker : wanted) {
+        if (limit && static_cast<int>(out.size()) >= limit) break;
+        auto it = map.find(ticker);
+        if (it == map.end()) {
+            std::cerr << "missing_sec_ticker\t" << ticker << "\n";
+            continue;
+        }
+        out.push_back(it->second);
     }
     return out;
 }
 
 void sync_submissions(const Args& a) {
-    if (!a.has("universe")) throw Error("sec sync-submissions requires --universe");
     Db db(db_path(a));
     init_schema(db);
 
-    auto wanted = read_universe_file(a.get("universe"));
-    int limit = a.geti("limit", 0);
-    auto map = fetch_sec_company_map();
+    auto targets = submission_targets(db, a);
     long long companies = 0;
     long long filings = 0;
 
@@ -103,22 +177,13 @@ void sync_submissions(const Args& a) {
 
     db.exec("begin");
     try {
-        int processed = 0;
-        for (const std::string& ticker : wanted) {
-            if (limit && processed >= limit) break;
-            auto it = map.find(ticker);
-            if (it == map.end()) {
-                std::cerr << "missing_sec_ticker\t" << ticker << "\n";
-                continue;
-            }
-            ++processed;
-            const SecCompany& c = it->second;
+        for (const SecCompany& c : targets) {
             std::this_thread::sleep_for(std::chrono::milliseconds(120));
             Json sub;
             try {
                 sub = parse_json(http_get("https://data.sec.gov/submissions/CIK" + cik10(c.cik) + ".json"));
             } catch (const std::exception& e) {
-                std::cerr << "sync_error\t" << ticker << "\t" << e.what() << "\n";
+                std::cerr << "sync_error\t" << c.ticker << "\t" << e.what() << "\n";
                 continue;
             }
             std::string name = sub.get("name").str().empty() ? c.name : sub.get("name").str();
@@ -128,7 +193,7 @@ void sync_submissions(const Args& a) {
             if (sub.get("exchanges").is_array() && !sub.get("exchanges").a.empty()) {
                 exchange = sub.get("exchanges").at(0).str();
             }
-            std::string primary_ticker = ticker;
+            std::string primary_ticker = c.ticker;
             if (sub.get("tickers").is_array() && !sub.get("tickers").a.empty()) {
                 primary_ticker = upper(sub.get("tickers").at(0).str());
             }
@@ -246,6 +311,14 @@ void sync_companyfacts(const Args& a) {
         throw;
     }
     std::cout << "companies\t" << processed << "\nfacts\t" << rows << "\n";
+}
+
+void update_sec_database(const Args& a) {
+    sync_companies(a);
+    sync_submissions(a);
+    if (a.has("facts") || a.has("companyfacts")) {
+        sync_companyfacts(a);
+    }
 }
 
 } // namespace eph

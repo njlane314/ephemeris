@@ -5,3 +5,4 @@ ephemeris.dSYM/
 *.db-wal
 *.o
 data/
+dist/

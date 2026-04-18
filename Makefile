@@ -14,6 +14,9 @@ endif
 PREFIX ?= /usr/local
 BINDIR ?= $(PREFIX)/bin
 SRCS := $(wildcard src/*.cpp)
+VERSION ?= v0.1.0
+DISTDIR := dist
+DISTFILE := $(DISTDIR)/ephemeris-$(VERSION).tar.gz
 
 all: ephemeris
 
@@ -27,8 +30,14 @@ install: ephemeris
 	install -d $(DESTDIR)$(BINDIR)
 	install -m 0755 ephemeris $(DESTDIR)$(BINDIR)/ephemeris
 
+dist:
+	install -d $(DISTDIR)
+	git archive --format=tar --prefix=ephemeris-$(VERSION)/ HEAD | gzip -9 > $(DISTFILE)
+	@echo $(DISTFILE)
+
 clean:
 	rm -f ephemeris
 	rm -rf ephemeris.dSYM
+	rm -rf $(DISTDIR)
 
-.PHONY: all install clean test
+.PHONY: all install clean test dist

@@ -172,6 +172,8 @@ std::vector<std::string> read_universe_file(const std::string& path);
 
 void sync_submissions(const Args& a);
 void sync_companyfacts(const Args& a);
+void sync_companies(const Args& a);
+void update_sec_database(const Args& a);
 void import_security_history(const Args& a);
 
 struct Price {
