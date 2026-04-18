@@ -289,6 +289,9 @@ create table if not exists security_identifier_history (
     primary key (ticker, valid_from, source)
 );
 
+create index if not exists security_identifier_history_lookup_idx
+on security_identifier_history(ticker, valid_from, valid_to);
+
 create table if not exists delistings (
     ticker text primary key,
     delist_date text not null,

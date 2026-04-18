@@ -106,6 +106,7 @@ int build_universe(Db& db, const Args& a, bool quiet) {
     try {
         for (const SecurityRow& s : candidate_securities(db)) {
             ++total;
+            long long cik = cik_for_ticker_asof(db, s.ticker, date, s.cik);
             Price p;
             bool ok = true;
             std::vector<std::string> reasons;
@@ -119,8 +120,8 @@ int build_universe(Db& db, const Args& a, bool quiet) {
             }
             double adv = p.adj > 0.0 ? adv63(db, s.ticker, date) : 0.0;
             double mcap = p.market_cap;
-            if (mcap <= 0.0 && s.cik) {
-                double sh = latest_shares(db, s.cik, date);
+            if (mcap <= 0.0 && cik) {
+                double sh = latest_shares(db, cik, date);
                 if (sh > 0.0) mcap = sh * p.adj;
             }
             if (min_price > 0.0 && p.adj < min_price) {
@@ -135,7 +136,7 @@ int build_universe(Db& db, const Args& a, bool quiet) {
                 ok = false;
                 reasons.push_back("market_cap");
             }
-            if (require_filing && !has_recent_filing(db, s.cik, date, filing_age)) {
+            if (require_filing && !has_recent_filing(db, cik, date, filing_age)) {
                 ok = false;
                 reasons.push_back("filing");
             }
@@ -148,7 +149,7 @@ int build_universe(Db& db, const Args& a, bool quiet) {
             ins.reset();
             ins.bind(1, date);
             ins.bind(2, s.ticker);
-            if (s.cik) ins.bind64(3, s.cik); else ins.bind_null(3);
+            if (cik) ins.bind64(3, cik); else ins.bind_null(3);
             ins.bind(4, ok ? 1 : 0);
             ins.bind(5, reason);
             ins.bind(6, p.adj);

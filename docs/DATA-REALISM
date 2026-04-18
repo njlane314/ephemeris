@@ -73,6 +73,9 @@ PRIORITY ORDER
                 Replace a single cost-bps input with named cost models that
                 can encode spread, slippage, and capacity assumptions.
 
+        Current surface:
+                ephemeris backtest --cost-model models/cost_default.model
+
 
 RULE
 

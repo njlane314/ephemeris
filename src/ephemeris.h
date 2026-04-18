@@ -172,6 +172,7 @@ std::vector<std::string> read_universe_file(const std::string& path);
 
 void sync_submissions(const Args& a);
 void sync_companyfacts(const Args& a);
+void import_security_history(const Args& a);
 
 struct Price {
     std::string date;
@@ -184,6 +185,7 @@ void import_prices(const Args& a);
 bool price_on_or_before(Db& db, const std::string& ticker, const std::string& date, Price& p);
 std::vector<double> price_series(Db& db, const std::string& ticker, const std::string& date);
 
+long long cik_for_ticker_asof(Db& db, const std::string& ticker, const std::string& date, long long fallback);
 int build_universe(Db& db, const Args& a, bool quiet = false);
 std::vector<std::string> eligible_tickers(Db& db, const std::string& date);
 
@@ -235,6 +237,9 @@ std::map<std::string, double> portfolio_weights(Db& db, const std::string& date,
 void command_portfolio_build(const Args& a);
 void command_universe_explain(const Args& a);
 void command_portfolio_explain(const Args& a);
+void command_audit_database(const Args& a);
+void command_audit_prices(const Args& a);
+void command_audit_asof(const Args& a);
 void command_backtest(const Args& a);
 void command_report(const Args& a);
 

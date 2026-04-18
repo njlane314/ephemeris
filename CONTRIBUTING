@@ -1,0 +1,40 @@
+CONTRIBUTING
+
+Ephemeris is intentionally small and command-line first.  Contributions should
+preserve that shape.
+
+
+DEVELOPMENT
+
+        make
+        make test
+
+The test target runs a deterministic end-to-end fixture through the real
+ephemeris binary.
+
+
+STYLE
+
+        Keep commands inspectable.
+        Prefer SQLite tables over hidden in-memory state.
+        Prefer plain text inputs and tab-separated outputs.
+        Keep point-in-time semantics explicit.
+        Add model parameters as files, not hardcoded constants.
+        Do not add alpha features before auditability exists.
+
+
+PATCHES
+
+Each patch should include:
+
+        the command or data surface it changes
+        the database tables it reads or writes
+        the validation command used
+
+Run make test before pushing.
+
+
+DATA
+
+Do not commit proprietary market data, SEC cache dumps, generated databases,
+or model outputs derived from restricted data.

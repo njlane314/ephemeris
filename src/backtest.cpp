@@ -2,6 +2,81 @@
 
 namespace eph {
 
+struct CostModel {
+    std::string name = "inline_cost_bps";
+    std::string description = "inline cost-bps argument";
+    double spread_bps = 0.0;
+    double slippage_bps = 0.0;
+    double impact_coefficient = 0.0;
+};
+
+static CostModel load_cost_model(const Args& a) {
+    CostModel m;
+    m.slippage_bps = a.getd("cost-bps", 10.0);
+    std::string path = a.get("cost-model");
+    if (path.empty()) return m;
+
+    std::ifstream file(path);
+    if (!file) throw Error("open failed: " + path);
+    m = CostModel{};
+    std::string line;
+    while (std::getline(file, line)) {
+        line = trim(line);
+        if (line.empty() || line[0] == '#') continue;
+        std::istringstream in(line);
+        std::string key;
+        in >> key;
+        if (key == "name") {
+            in >> m.name;
+        } else if (key == "spread_bps") {
+            in >> m.spread_bps;
+        } else if (key == "slippage_bps") {
+            in >> m.slippage_bps;
+        } else if (key == "impact_coefficient") {
+            in >> m.impact_coefficient;
+        } else if (key == "description") {
+            std::getline(in, m.description);
+            m.description = trim(m.description);
+        } else {
+            throw Error("unknown cost model key: " + key);
+        }
+    }
+    return m;
+}
+
+static void store_cost_model(Db& db, const CostModel& m) {
+    auto st = db.prepare(
+        "insert into transaction_cost_models(model_name,spread_bps,slippage_bps,impact_coefficient,active,description)"
+        " values(?,?,?,?,1,?)"
+        " on conflict(model_name) do update set"
+        " spread_bps=excluded.spread_bps, slippage_bps=excluded.slippage_bps,"
+        " impact_coefficient=excluded.impact_coefficient, active=1, description=excluded.description");
+    st.bind(1, m.name);
+    st.bind(2, m.spread_bps);
+    st.bind(3, m.slippage_bps);
+    st.bind(4, m.impact_coefficient);
+    st.bind(5, m.description);
+    st.run();
+}
+
+static double universe_adv(Db& db, const std::string& date, const std::string& ticker) {
+    auto st = db.prepare("select adv from universe where date=? and ticker=?");
+    st.bind(1, date);
+    st.bind(2, ticker);
+    return st.step() ? st.number(0) : 0.0;
+}
+
+static double trade_cost(Db& db, const CostModel& m, const std::string& date,
+                         const std::string& ticker, double notional) {
+    double base_rate = (m.spread_bps + m.slippage_bps) / 10000.0;
+    double adv = universe_adv(db, date, ticker);
+    double impact_rate = 0.0;
+    if (m.impact_coefficient > 0.0 && adv > 0.0) {
+        impact_rate = m.impact_coefficient * std::abs(notional) / adv;
+    }
+    return std::abs(notional) * (base_rate + impact_rate);
+}
+
 static std::vector<std::string> trading_dates(Db& db, const std::string& from, const std::string& to) {
     std::vector<std::string> dates;
     auto st = db.prepare("select distinct date from prices where date>=? and date<=? order by date");
@@ -42,7 +117,8 @@ void command_backtest(const Args& a) {
     init_schema(db);
     int topn = a.geti("top", 50);
     double maxw = a.getd("max-weight", 0.04);
-    double cost_rate = a.getd("cost-bps", 10.0) / 10000.0;
+    CostModel cost_model = load_cost_model(a);
+    store_cost_model(db, cost_model);
     bool use_regime = a.has("regime") || a.has("regime-model");
 
     auto dates = trading_dates(db, from, to);
@@ -97,7 +173,7 @@ void command_backtest(const Args& a) {
                 double tgt_val = (target.count(t) ? target[t] : 0.0) * nav;
                 double notional = tgt_val - cur_val;
                 if (std::abs(notional) < 1e-12) continue;
-                double cost = std::abs(notional) * cost_rate;
+                double cost = trade_cost(db, cost_model, date, t, notional);
                 double delta_sh = notional / p.adj;
                 shares[t] = cur_sh + delta_sh;
                 if (std::abs(shares[t]) < 1e-12) shares.erase(t);
@@ -148,7 +224,8 @@ void command_backtest(const Args& a) {
     }
     double years = std::max(1.0 / 252.0, static_cast<double>(date_days(to) - date_days(from)) / 365.25);
     double cagr = start > 0.0 ? std::pow(end / start, 1.0 / years) - 1.0 : 0.0;
-    std::cout << "from\t" << from << "\nto\t" << to << "\nrebalances\t" << rebalances
+    std::cout << "from\t" << from << "\nto\t" << to << "\ncost_model\t" << cost_model.name
+              << "\nrebalances\t" << rebalances
               << "\nstart_nav\t" << start << "\nend_nav\t" << end
               << "\ncagr\t" << cagr << "\nmax_drawdown\t" << maxdd << "\n";
 }

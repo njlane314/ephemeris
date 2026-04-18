@@ -1,0 +1,5 @@
+name default_cost_v1
+spread_bps 5
+slippage_bps 5
+impact_coefficient 0
+description simple default spread plus slippage model

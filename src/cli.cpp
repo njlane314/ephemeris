@@ -10,6 +10,7 @@ usage:
   ephemeris db init --db data/ephemeris.db
   ephemeris sec sync-submissions --universe tickers.txt --db data/ephemeris.db [--limit N]
   ephemeris sec sync-companyfacts --db data/ephemeris.db [--limit N]
+  ephemeris securities import-history --input history.csv --db data/ephemeris.db
   ephemeris prices import --input prices.csv --db data/ephemeris.db
   ephemeris universe build --date YYYY-MM-DD [--min-market-cap N] [--min-adv N] [--min-price N] [--require-current-filing] --db DB
   ephemeris universe explain --date YYYY-MM-DD --ticker TICKER --db DB
@@ -18,7 +19,10 @@ usage:
   ephemeris regime filter --date YYYY-MM-DD [--market SPY] [--model MODEL] --db DB
   ephemeris portfolio build --date YYYY-MM-DD [--top 50] [--max-weight 0.04] [--regime-model MODEL] --db DB
   ephemeris portfolio explain --date YYYY-MM-DD --db DB
-  ephemeris backtest --from YYYY-MM-DD --to YYYY-MM-DD [--top 50] [--cost-bps 10] [--regime] --db DB
+  ephemeris audit database --db DB
+  ephemeris audit prices --db DB
+  ephemeris audit asof --date YYYY-MM-DD --db DB
+  ephemeris backtest --from YYYY-MM-DD --to YYYY-MM-DD [--top 50] [--cost-bps 10] [--cost-model MODEL] [--regime] --db DB
   ephemeris report [--date YYYY-MM-DD] --db DB
 
 price CSV columns:
@@ -59,6 +63,13 @@ int run(int argc, char** argv) {
         import_prices(parse_args(argc, argv, 3));
         return 0;
     }
+    if (cmd == "securities") {
+        if (argc < 3 || std::string(argv[2]) != "import-history") {
+            throw Error("usage: ephemeris securities import-history --input CSV");
+        }
+        import_security_history(parse_args(argc, argv, 3));
+        return 0;
+    }
     if (cmd == "universe") {
         if (argc < 3) throw Error("usage: ephemeris universe <build|explain>");
         std::string sub = argv[2];
@@ -95,6 +106,16 @@ int run(int argc, char** argv) {
         if (sub == "build") command_portfolio_build(a);
         else if (sub == "explain") command_portfolio_explain(a);
         else throw Error("unknown portfolio command: " + sub);
+        return 0;
+    }
+    if (cmd == "audit") {
+        if (argc < 3) throw Error("usage: ephemeris audit <database|prices|asof>");
+        std::string sub = argv[2];
+        Args a = parse_args(argc, argv, 3);
+        if (sub == "database") command_audit_database(a);
+        else if (sub == "prices") command_audit_prices(a);
+        else if (sub == "asof") command_audit_asof(a);
+        else throw Error("unknown audit command: " + sub);
         return 0;
     }
     if (cmd == "backtest") {

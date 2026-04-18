@@ -42,6 +42,7 @@ SYNOPSIS
         ephemeris db init --db DB
         ephemeris sec sync-submissions --universe FILE --db DB
         ephemeris sec sync-companyfacts --db DB
+        ephemeris securities import-history --input FILE --db DB
         ephemeris prices import --input FILE --db DB
         ephemeris universe build --date DATE --db DB
         ephemeris universe explain --date DATE --ticker TICKER --db DB
@@ -50,6 +51,9 @@ SYNOPSIS
         ephemeris regime filter --date DATE --db DB
         ephemeris portfolio build --date DATE --top N --db DB
         ephemeris portfolio explain --date DATE --db DB
+        ephemeris audit database --db DB
+        ephemeris audit prices --db DB
+        ephemeris audit asof --date DATE --db DB
         ephemeris backtest --from DATE --to DATE --db DB
         ephemeris report --date DATE --db DB
 
@@ -102,6 +106,22 @@ downloads submission JSON, stores company records, and stores recent filings.
 The companyfacts command downloads SEC companyfacts JSON and stores a compact
 set of accounting tags for revenue, net income, assets, liabilities, equity,
 shares, cash, and debt.
+
+
+SECURITY HISTORY
+
+Import ticker to CIK history:
+
+        ./ephemeris securities import-history \
+                --input data/raw/security-history.csv \
+                --db data/ephemeris.db
+
+Expected CSV columns:
+
+        ticker,cik,valid_from,valid_to,source
+
+Universe construction resolves CIK through security_identifier_history as of
+the rebalance date before checking filings or share-count facts.
 
 
 PRICE DATA
@@ -242,12 +262,42 @@ Run a monthly top-N backtest:
                 --to 2026-01-01 \
                 --top 50 \
                 --cost-bps 10 \
+                --cost-model models/cost_default.model \
                 --regime \
                 --db data/ephemeris.db
 
 Without --regime, the backtest uses full exposure.  With --regime, each
 rebalance stores filtered regime probabilities and uses the resulting exposure
 throttle.
+
+The cost model is a plain text file.  The default tracked model is:
+
+        models/cost_default.model
+
+If --cost-model is omitted, the backtest uses --cost-bps as a simple inline
+slippage assumption.
+
+
+AUDIT
+
+Audit database integrity:
+
+        ./ephemeris audit database \
+                --db data/ephemeris.db
+
+Audit price coverage and obvious price problems:
+
+        ./ephemeris audit prices \
+                --db data/ephemeris.db
+
+Audit a specific as-of date:
+
+        ./ephemeris audit asof \
+                --date 2026-04-01 \
+                --db data/ephemeris.db
+
+Audit output is tab-separated and intentionally count-oriented.  It is meant
+to catch silent wrongness before adding more research features.
 
 
 REPORT
@@ -276,6 +326,9 @@ FILES
         models/momentum_regime.model
                 Default regime throttle parameters.
 
+        models/cost_default.model
+                Default transaction cost model.
+
         scripts/make-fixture-prices
                 Deterministic sample price generator for tests and examples.
 
@@ -285,6 +338,12 @@ FILES
 
         tests/smoke.sh
                 End-to-end command smoke test used by make test.
+
+        LICENSE
+                MIT license.
+
+        CONTRIBUTING
+                Contribution and development notes.
 
         ephemeris.db
                 Default SQLite database path if --db is omitted.
