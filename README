@@ -1,0 +1,252 @@
+EPHEMERIS
+
+Ephemeris is a local C++ command-line system for filing-aware momentum
+research.  It builds a SQLite database from SEC filings and price history,
+materializes an investable universe, ranks stocks by momentum, applies a
+small Markov regime throttle, and writes portfolio targets and backtest
+results back to the database.
+
+
+REQUIREMENTS
+
+        C++17 compiler
+        SQLite development library
+        libcurl development library
+        pkg-config
+        make
+
+SEC commands also need a real user agent:
+
+        EPHEMERIS_USER_AGENT='name email@example.com'
+        export EPHEMERIS_USER_AGENT
+
+
+BUILDING
+
+        make
+
+This builds the ephemeris executable in the source directory.
+
+        make clean
+
+This removes generated build output.
+
+
+SYNOPSIS
+
+        ephemeris db init --db DB
+        ephemeris sec sync-submissions --universe FILE --db DB
+        ephemeris sec sync-companyfacts --db DB
+        ephemeris prices import --input FILE --db DB
+        ephemeris universe build --date DATE --db DB
+        ephemeris signal momentum --date DATE --db DB
+        ephemeris regime filter --date DATE --db DB
+        ephemeris portfolio build --date DATE --top N --db DB
+        ephemeris backtest --from DATE --to DATE --db DB
+        ephemeris report --date DATE --db DB
+
+
+DESCRIPTION
+
+Ephemeris keeps the database as the durable system boundary.  Each command
+does one job, writes materialized rows, and emits plain tab-separated output.
+The database can be inspected directly with sqlite3 and the command output is
+usable with ordinary shell tools.
+
+The main pipeline is:
+
+        SEC submissions and company facts define companies and filings.
+        Adjusted prices define tradability and momentum.
+        Universe construction records eligibility by date.
+        Momentum ranks eligible securities by date.
+        The regime filter estimates current momentum risk.
+        Portfolio construction writes target weights.
+        Backtests write NAV and trade records.
+
+
+DATABASE
+
+Initialize a database:
+
+        ./ephemeris db init --db data/ephemeris.db
+
+The schema stores companies, securities, filings, XBRL facts, prices,
+universe membership, signals, regime features, regime outputs, portfolio
+targets, backtest NAV, and backtest trades.
+
+
+SEC DATA
+
+Synchronize recent SEC submissions for a ticker list:
+
+        ./ephemeris sec sync-submissions \
+                --universe data/universe/tickers.txt \
+                --db data/ephemeris.db
+
+Synchronize compact company facts for known CIKs:
+
+        ./ephemeris sec sync-companyfacts \
+                --db data/ephemeris.db
+
+The submissions command resolves tickers through the SEC company ticker feed,
+downloads submission JSON, stores company records, and stores recent filings.
+
+The companyfacts command downloads SEC companyfacts JSON and stores a compact
+set of accounting tags for revenue, net income, assets, liabilities, equity,
+shares, cash, and debt.
+
+
+PRICE DATA
+
+Import adjusted prices from CSV:
+
+        ./ephemeris prices import \
+                --input data/raw/prices.csv \
+                --db data/ephemeris.db
+
+Expected CSV columns:
+
+        date,ticker,open,high,low,close,adj_close,volume,market_cap
+
+The market_cap column may be empty.  If it is empty, universe construction
+tries to combine the latest SEC share count with adjusted price.
+
+Parquet is intentionally outside the executable.  Convert Parquet upstream
+with DuckDB or Arrow tooling and pass Ephemeris CSV.
+
+
+UNIVERSE
+
+Build a point-in-time universe:
+
+        ./ephemeris universe build \
+                --date 2026-04-01 \
+                --min-market-cap 2000000000 \
+                --min-adv 20000000 \
+                --min-price 5 \
+                --require-current-filing \
+                --db data/ephemeris.db
+
+Universe rows are materialized by date.  This prevents later signals and
+backtests from silently recomputing eligibility with current metadata.
+
+
+MOMENTUM
+
+Rank eligible securities:
+
+        ./ephemeris signal momentum \
+                --date 2026-04-01 \
+                --lookbacks 63,126,252 \
+                --skip-days 21 \
+                --db data/ephemeris.db
+
+The default score is:
+
+        0.50 times 12-month momentum excluding the most recent month
+        0.30 times 6-month momentum excluding the most recent month
+        0.20 times 3-month momentum excluding the most recent month
+        minus 0.25 times 3-month realized volatility
+
+
+REGIME FILTER
+
+Estimate current regime probabilities:
+
+        ./ephemeris regime filter \
+                --date 2026-04-01 \
+                --market SPY \
+                --db data/ephemeris.db
+
+The regime layer is a small Markov throttle:
+
+        three hidden states: favorable, neutral, stress
+        sticky transition probabilities
+        transition tilt from trend, volatility, breadth, concentration,
+        and drawdown
+        heavy-tailed emission scoring
+        filtered probabilities only
+        continuous exposure rather than hard state switching
+
+The stored output is:
+
+        p_favorable
+        p_neutral
+        p_stress
+        expected_momentum_edge
+        exposure
+
+
+PORTFOLIO
+
+Build target weights:
+
+        ./ephemeris portfolio build \
+                --date 2026-04-01 \
+                --top 50 \
+                --max-weight 0.04 \
+                --regime-model models/momentum_regime.model \
+                --db data/ephemeris.db
+
+The first portfolio is long-only and equal-weighted after the regime exposure
+throttle.  Unused exposure is written as CASH.
+
+
+BACKTEST
+
+Run a monthly top-N backtest:
+
+        ./ephemeris backtest \
+                --from 2015-01-01 \
+                --to 2026-01-01 \
+                --top 50 \
+                --cost-bps 10 \
+                --regime \
+                --db data/ephemeris.db
+
+Without --regime, the backtest uses full exposure.  With --regime, each
+rebalance stores filtered regime probabilities and uses the resulting exposure
+throttle.
+
+
+REPORT
+
+Print a compact report:
+
+        ./ephemeris report \
+                --date 2026-04-01 \
+                --db data/ephemeris.db
+
+The report prints universe counts, regime probabilities, top signals,
+portfolio weights, and latest NAV as tab-separated text.
+
+
+FILES
+
+        Makefile
+                Build rules.
+
+        README
+                Plain text project documentation.
+
+        src/ephemeris.cpp
+                The complete command-line implementation.
+
+        ephemeris.db
+                Default SQLite database path if --db is omitted.
+
+
+EXIT STATUS
+
+        0       success
+        1       command error, bad input, unavailable network resource, or
+                database failure
+
+
+NOTES
+
+This is an MVP research appliance, not a broker.  It does not place orders.
+
+The useful edge is expected to come from data discipline: point-in-time
+eligibility, clean security classification, realistic prices, and explicit
+materialized outputs.  The Markov model is only a capital throttle.

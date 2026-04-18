@@ -1,0 +1,8 @@
+ephemeris
+ephemeris.dSYM/
+*.db
+*.db-shm
+*.db-wal
+*.o
+data/
+models/
