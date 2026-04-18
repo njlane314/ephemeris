@@ -1,0 +1,251 @@
+#include "ephemeris.h"
+
+namespace eph {
+
+static std::string cik10(long long cik) {
+    std::ostringstream out;
+    out << std::setw(10) << std::setfill('0') << cik;
+    return out.str();
+}
+
+static void upsert_company(Db& db, long long cik, const std::string& ticker, const std::string& name,
+                           const std::string& exchange, const std::string& sic,
+                           const std::string& fiscal_year_end) {
+    auto st = db.prepare(
+        "insert into companies(cik,ticker,name,exchange,sic,fiscal_year_end,updated_at)"
+        " values(?,?,?,?,?,?,current_timestamp)"
+        " on conflict(cik) do update set"
+        " ticker=coalesce(nullif(excluded.ticker,''),companies.ticker),"
+        " name=coalesce(nullif(excluded.name,''),companies.name),"
+        " exchange=coalesce(nullif(excluded.exchange,''),companies.exchange),"
+        " sic=coalesce(nullif(excluded.sic,''),companies.sic),"
+        " fiscal_year_end=coalesce(nullif(excluded.fiscal_year_end,''),companies.fiscal_year_end),"
+        " updated_at=current_timestamp");
+    st.bind64(1, cik);
+    st.bind(2, ticker);
+    st.bind(3, name);
+    st.bind(4, exchange);
+    st.bind(5, sic);
+    st.bind(6, fiscal_year_end);
+    st.run();
+
+    if (!ticker.empty()) {
+        auto sec = db.prepare(
+            "insert into securities(ticker,cik,name,exchange,security_type,sic,active,first_seen,last_seen)"
+            " values(?,?,?,?, 'common', ?, 1, date('now'), date('now'))"
+            " on conflict(ticker) do update set"
+            " cik=coalesce(excluded.cik,securities.cik),"
+            " name=coalesce(nullif(excluded.name,''),securities.name),"
+            " exchange=coalesce(nullif(excluded.exchange,''),securities.exchange),"
+            " sic=coalesce(nullif(excluded.sic,''),securities.sic),"
+            " active=1,last_seen=date('now')");
+        sec.bind(1, ticker);
+        sec.bind64(2, cik);
+        sec.bind(3, name);
+        sec.bind(4, exchange);
+        sec.bind(5, sic);
+        sec.run();
+    }
+}
+
+struct SecCompany {
+    long long cik = 0;
+    std::string name;
+    std::string ticker;
+    std::string exchange;
+};
+
+static std::unordered_map<std::string, SecCompany> fetch_sec_company_map() {
+    std::string body = http_get("https://www.sec.gov/files/company_tickers_exchange.json");
+    Json root = parse_json(body);
+    std::unordered_map<std::string, int> fidx;
+    const Json& fields = root.get("fields");
+    for (size_t i = 0; i < fields.a.size(); ++i) fidx[fields.at(i).str()] = static_cast<int>(i);
+    auto idx = [&](const std::string& k) -> int {
+        auto it = fidx.find(k);
+        if (it == fidx.end()) throw Error("SEC company map missing field: " + k);
+        return it->second;
+    };
+    int cik_i = idx("cik");
+    int name_i = idx("name");
+    int ticker_i = idx("ticker");
+    int exchange_i = idx("exchange");
+
+    std::unordered_map<std::string, SecCompany> out;
+    for (const Json& row : root.get("data").a) {
+        SecCompany c;
+        c.cik = static_cast<long long>(row.at(cik_i).num());
+        c.name = row.at(name_i).str();
+        c.ticker = upper(row.at(ticker_i).str());
+        c.exchange = row.at(exchange_i).str();
+        if (!c.ticker.empty()) out[c.ticker] = c;
+    }
+    return out;
+}
+
+void sync_submissions(const Args& a) {
+    if (!a.has("universe")) throw Error("sec sync-submissions requires --universe");
+    Db db(db_path(a));
+    init_schema(db);
+
+    auto wanted = read_universe_file(a.get("universe"));
+    int limit = a.geti("limit", 0);
+    auto map = fetch_sec_company_map();
+    long long companies = 0;
+    long long filings = 0;
+
+    auto filing = db.prepare(
+        "insert into filings(cik,accession,form,filing_date,report_date,acceptance_datetime,primary_document)"
+        " values(?,?,?,?,?,?,?)"
+        " on conflict(cik,accession) do update set"
+        " form=excluded.form, filing_date=excluded.filing_date, report_date=excluded.report_date,"
+        " acceptance_datetime=excluded.acceptance_datetime, primary_document=excluded.primary_document");
+
+    db.exec("begin");
+    try {
+        int processed = 0;
+        for (const std::string& ticker : wanted) {
+            if (limit && processed >= limit) break;
+            auto it = map.find(ticker);
+            if (it == map.end()) {
+                std::cerr << "missing_sec_ticker\t" << ticker << "\n";
+                continue;
+            }
+            ++processed;
+            const SecCompany& c = it->second;
+            std::this_thread::sleep_for(std::chrono::milliseconds(120));
+            Json sub;
+            try {
+                sub = parse_json(http_get("https://data.sec.gov/submissions/CIK" + cik10(c.cik) + ".json"));
+            } catch (const std::exception& e) {
+                std::cerr << "sync_error\t" << ticker << "\t" << e.what() << "\n";
+                continue;
+            }
+            std::string name = sub.get("name").str().empty() ? c.name : sub.get("name").str();
+            std::string sic = sub.get("sic").str();
+            std::string fye = sub.get("fiscalYearEnd").str();
+            std::string exchange = c.exchange;
+            if (sub.get("exchanges").is_array() && !sub.get("exchanges").a.empty()) {
+                exchange = sub.get("exchanges").at(0).str();
+            }
+            std::string primary_ticker = ticker;
+            if (sub.get("tickers").is_array() && !sub.get("tickers").a.empty()) {
+                primary_ticker = upper(sub.get("tickers").at(0).str());
+            }
+            upsert_company(db, c.cik, primary_ticker, name, exchange, sic, fye);
+            ++companies;
+
+            const Json& recent = sub.get("filings").get("recent");
+            const auto& forms = recent.get("form").a;
+            const auto& accns = recent.get("accessionNumber").a;
+            const auto& fdates = recent.get("filingDate").a;
+            const auto& rdates = recent.get("reportDate").a;
+            const auto& adt = recent.get("acceptanceDateTime").a;
+            const auto& docs = recent.get("primaryDocument").a;
+            for (size_t i = 0; i < accns.size(); ++i) {
+                filing.reset();
+                filing.bind64(1, c.cik);
+                filing.bind(2, accns[i].str());
+                filing.bind(3, i < forms.size() ? forms[i].str() : "");
+                filing.bind(4, i < fdates.size() ? fdates[i].str() : "");
+                filing.bind(5, i < rdates.size() ? rdates[i].str() : "");
+                filing.bind(6, i < adt.size() ? adt[i].str() : "");
+                filing.bind(7, i < docs.size() ? docs[i].str() : "");
+                filing.run();
+                ++filings;
+            }
+        }
+        db.exec("commit");
+    } catch (...) {
+        db.exec("rollback");
+        throw;
+    }
+    std::cout << "companies\t" << companies << "\nfilings\t" << filings << "\n";
+}
+
+void sync_companyfacts(const Args& a) {
+    Db db(db_path(a));
+    init_schema(db);
+    int limit = a.geti("limit", 0);
+    std::set<std::string> tags = {
+        "Revenues",
+        "RevenueFromContractWithCustomerExcludingAssessedTax",
+        "NetIncomeLoss",
+        "Assets",
+        "Liabilities",
+        "StockholdersEquity",
+        "CommonStockSharesOutstanding",
+        "EntityCommonStockSharesOutstanding",
+        "CashAndCashEquivalentsAtCarryingValue",
+        "LongTermDebt",
+        "LongTermDebtCurrent",
+        "DebtCurrent",
+        "DebtInstrumentCarryingAmount"
+    };
+
+    std::vector<long long> ciks;
+    auto q = db.prepare("select cik from companies order by cik");
+    while (q.step()) ciks.push_back(q.i64(0));
+
+    auto ins = db.prepare(
+        "insert into facts(cik,tag,period_end,filed,form,fy,fp,unit,value,accession,frame)"
+        " values(?,?,?,?,?,?,?,?,?,?,?)"
+        " on conflict(cik,tag,period_end,filed,unit,accession) do update set"
+        " form=excluded.form, fy=excluded.fy, fp=excluded.fp, value=excluded.value, frame=excluded.frame");
+
+    long long rows = 0;
+    int processed = 0;
+    db.exec("begin");
+    try {
+        for (long long cik : ciks) {
+            if (limit && processed >= limit) break;
+            ++processed;
+            std::this_thread::sleep_for(std::chrono::milliseconds(120));
+            Json root;
+            try {
+                root = parse_json(http_get("https://data.sec.gov/api/xbrl/companyfacts/CIK" + cik10(cik) + ".json"));
+            } catch (const std::exception& e) {
+                std::cerr << "facts_error\t" << cik << "\t" << e.what() << "\n";
+                continue;
+            }
+            const Json& gaap = root.get("facts").get("us-gaap");
+            if (!gaap.is_object()) continue;
+            for (const auto& kv : gaap.o) {
+                const std::string& tag = kv.first;
+                if (!tags.count(tag)) continue;
+                const Json& units = kv.second.get("units");
+                if (!units.is_object()) continue;
+                for (const auto& uv : units.o) {
+                    const std::string& unit = uv.first;
+                    for (const Json& rec : uv.second.a) {
+                        std::string end = rec.get("end").str();
+                        std::string filed = rec.get("filed").str();
+                        if (end.empty() || filed.empty() || !rec.get("val").is_number()) continue;
+                        ins.reset();
+                        ins.bind64(1, cik);
+                        ins.bind(2, tag);
+                        ins.bind(3, end);
+                        ins.bind(4, filed);
+                        ins.bind(5, rec.get("form").str());
+                        if (rec.get("fy").is_number()) ins.bind(6, static_cast<int>(rec.get("fy").num()));
+                        else ins.bind_null(6);
+                        ins.bind(7, rec.get("fp").str());
+                        ins.bind(8, unit);
+                        ins.bind(9, rec.get("val").num());
+                        ins.bind(10, rec.get("accn").str());
+                        ins.bind(11, rec.get("frame").str());
+                        ins.run();
+                        ++rows;
+                    }
+                }
+            }
+        }
+        db.exec("commit");
+    } catch (...) {
+        db.exec("rollback");
+        throw;
+    }
+    std::cout << "companies\t" << processed << "\nfacts\t" << rows << "\n";
+}
+
+} // namespace eph

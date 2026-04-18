@@ -13,11 +13,12 @@ endif
 
 PREFIX ?= /usr/local
 BINDIR ?= $(PREFIX)/bin
+SRCS := $(wildcard src/*.cpp)
 
 all: ephemeris
 
-ephemeris: src/ephemeris.cpp
-	$(CXX) $(CXXFLAGS) $< -o $@ $(LDLIBS)
+ephemeris: $(SRCS)
+	$(CXX) $(CXXFLAGS) $(SRCS) -o $@ $(LDLIBS)
 
 install: ephemeris
 	install -d $(DESTDIR)$(BINDIR)
