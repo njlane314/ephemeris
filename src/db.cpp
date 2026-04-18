@@ -235,6 +235,22 @@ create table if not exists regime_outputs (
     exposure real not null
 );
 
+create table if not exists regime_models (
+    model_name text primary key,
+    version text not null default '',
+    source_path text not null default '',
+    loaded_at text not null default current_timestamp,
+    states text not null default '',
+    features text not null default '',
+    transition_matrix text not null default '',
+    bias_terms text not null default '',
+    emission_means text not null default '',
+    emission_scales text not null default '',
+    edge_terms text not null default '',
+    exposure_terms text not null default '',
+    t_nu real not null default 5.0
+);
+
 create table if not exists portfolio_targets (
     date text not null,
     ticker text not null,
@@ -262,6 +278,56 @@ create table if not exists backtest_trades (
     notional real not null,
     cost real not null,
     reason text not null default 'rebalance'
+);
+
+create table if not exists security_identifier_history (
+    ticker text not null,
+    cik integer,
+    valid_from text not null,
+    valid_to text,
+    source text not null default '',
+    primary key (ticker, valid_from, source)
+);
+
+create table if not exists delistings (
+    ticker text primary key,
+    delist_date text not null,
+    reason text not null default '',
+    terminal_return real,
+    source text not null default ''
+);
+
+create table if not exists corporate_actions (
+    ticker text not null,
+    date text not null,
+    action_type text not null,
+    value real not null,
+    source text not null default '',
+    primary key (ticker, date, action_type, source)
+);
+
+create table if not exists security_classifications (
+    ticker text not null,
+    asof_date text not null,
+    security_type text not null,
+    source text not null default '',
+    reason text not null default '',
+    primary key (ticker, asof_date, source)
+);
+
+create table if not exists price_adjustment_policies (
+    policy_name text primary key,
+    description text not null,
+    active integer not null default 0
+);
+
+create table if not exists transaction_cost_models (
+    model_name text primary key,
+    spread_bps real not null default 0,
+    slippage_bps real not null default 0,
+    impact_coefficient real not null default 0,
+    active integer not null default 0,
+    description text not null default ''
 );
 )SQL";
 

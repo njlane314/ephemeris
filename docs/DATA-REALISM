@@ -1,0 +1,80 @@
+DATA REALISM
+
+Ephemeris should improve data realism before adding more signals or model
+complexity.  The database now includes staging tables for the work that needs
+to come next.
+
+
+PRIORITY ORDER
+
+1. Ticker and CIK history
+
+        Table:
+                security_identifier_history
+
+        Purpose:
+                Track which ticker mapped to which CIK over time.  This is
+                required for mergers, renames, stale tickers, and point-in-time
+                reconstruction.
+
+
+2. Delisting handling
+
+        Table:
+                delistings
+
+        Purpose:
+                Store delist dates, delist reasons, and terminal returns.
+                Momentum backtests that ignore dead names are not useful.
+
+
+3. Split and dividend adjustment policy
+
+        Tables:
+                corporate_actions
+                price_adjustment_policies
+
+        Purpose:
+                Make the adjusted-price convention explicit.  Price data needs
+                a declared policy, not implicit vendor behavior.
+
+
+4. Security type classification
+
+        Table:
+                security_classifications
+
+        Purpose:
+                Explain why an instrument is treated as common stock, fund,
+                unit, preferred, warrant, right, ADR, or other.  The universe
+                filter should eventually consume this table instead of relying
+                mostly on names and coarse security_type text.
+
+
+5. ADV and market cap point-in-time checks
+
+        Tables:
+                prices
+                facts
+                security_identifier_history
+
+        Purpose:
+                Liquidity and market-cap filters must use values available as
+                of the rebalance date.  Shares from SEC facts require filed-date
+                semantics, not just period-end semantics.
+
+
+6. Transaction cost model
+
+        Table:
+                transaction_cost_models
+
+        Purpose:
+                Replace a single cost-bps input with named cost models that
+                can encode spread, slippage, and capacity assumptions.
+
+
+RULE
+
+Do not add another alpha feature until these surfaces can be inspected through
+audit or explain commands.

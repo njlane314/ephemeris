@@ -12,9 +12,12 @@ usage:
   ephemeris sec sync-companyfacts --db data/ephemeris.db [--limit N]
   ephemeris prices import --input prices.csv --db data/ephemeris.db
   ephemeris universe build --date YYYY-MM-DD [--min-market-cap N] [--min-adv N] [--min-price N] [--require-current-filing] --db DB
+  ephemeris universe explain --date YYYY-MM-DD --ticker TICKER --db DB
   ephemeris signal momentum --date YYYY-MM-DD [--lookbacks 63,126,252] [--skip-days 21] --db DB
-  ephemeris regime filter --date YYYY-MM-DD [--market SPY] --db DB
+  ephemeris signal explain --date YYYY-MM-DD --ticker TICKER --db DB
+  ephemeris regime filter --date YYYY-MM-DD [--market SPY] [--model MODEL] --db DB
   ephemeris portfolio build --date YYYY-MM-DD [--top 50] [--max-weight 0.04] [--regime-model MODEL] --db DB
+  ephemeris portfolio explain --date YYYY-MM-DD --db DB
   ephemeris backtest --from YYYY-MM-DD --to YYYY-MM-DD [--top 50] [--cost-bps 10] [--regime] --db DB
   ephemeris report [--date YYYY-MM-DD] --db DB
 
@@ -57,16 +60,27 @@ int run(int argc, char** argv) {
         return 0;
     }
     if (cmd == "universe") {
-        if (argc < 3 || std::string(argv[2]) != "build") throw Error("usage: ephemeris universe build --date DATE");
+        if (argc < 3) throw Error("usage: ephemeris universe <build|explain>");
+        std::string sub = argv[2];
         Args a = parse_args(argc, argv, 3);
-        Db db(db_path(a));
-        init_schema(db);
-        build_universe(db, a, false);
+        if (sub == "build") {
+            Db db(db_path(a));
+            init_schema(db);
+            build_universe(db, a, false);
+        } else if (sub == "explain") {
+            command_universe_explain(a);
+        } else {
+            throw Error("unknown universe command: " + sub);
+        }
         return 0;
     }
     if (cmd == "signal") {
-        if (argc < 3 || std::string(argv[2]) != "momentum") throw Error("usage: ephemeris signal momentum --date DATE");
-        command_signal_momentum(parse_args(argc, argv, 3));
+        if (argc < 3) throw Error("usage: ephemeris signal <momentum|explain>");
+        std::string sub = argv[2];
+        Args a = parse_args(argc, argv, 3);
+        if (sub == "momentum") command_signal_momentum(a);
+        else if (sub == "explain") command_signal_explain(a);
+        else throw Error("unknown signal command: " + sub);
         return 0;
     }
     if (cmd == "regime") {
@@ -75,8 +89,12 @@ int run(int argc, char** argv) {
         return 0;
     }
     if (cmd == "portfolio") {
-        if (argc < 3 || std::string(argv[2]) != "build") throw Error("usage: ephemeris portfolio build --date DATE");
-        command_portfolio_build(parse_args(argc, argv, 3));
+        if (argc < 3) throw Error("usage: ephemeris portfolio <build|explain>");
+        std::string sub = argv[2];
+        Args a = parse_args(argc, argv, 3);
+        if (sub == "build") command_portfolio_build(a);
+        else if (sub == "explain") command_portfolio_explain(a);
+        else throw Error("unknown portfolio command: " + sub);
         return 0;
     }
     if (cmd == "backtest") {

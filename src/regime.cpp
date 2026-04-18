@@ -126,6 +126,169 @@ static std::array<double, 3> previous_regime(Db& db, const std::string& date) {
     if (st.step()) return {st.number(0), st.number(1), st.number(2)};
     return {1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0};
 }
+
+struct RegimeModel {
+    std::string name = "builtin_momentum_regime";
+    std::string version = "1";
+    std::string source_path = "builtin";
+    std::array<std::string, 3> states {{ "favorable", "neutral", "stress" }};
+    std::array<std::string, 6> features {{ "trend", "vol", "breadth", "spread", "concentration", "drawdown" }};
+    std::array<std::array<double, 3>, 3> transition {{
+        {{0.88, 0.10, 0.02}},
+        {{0.18, 0.70, 0.12}},
+        {{0.05, 0.25, 0.70}}
+    }};
+    std::array<std::array<double, 7>, 3> bias {{
+        {{-0.60,  2.50, -2.00,  2.00, 0.00, 0.00, -1.50}},
+        {{ 0.00,  0.00,  0.00,  0.00, 0.00, 0.00,  0.00}},
+        {{ 0.66, -2.50,  2.80, -2.00, 0.00, 1.20,  2.00}}
+    }};
+    std::array<double, 2> neutral_abs {{ -0.35, -0.20 }};
+    std::array<std::array<double, 6>, 3> mean {{
+        {{ 0.12, 0.16, 0.66, 0.12, 0.12, 0.02 }},
+        {{ 0.03, 0.23, 0.50, 0.07, 0.18, 0.06 }},
+        {{-0.10, 0.38, 0.30, 0.02, 0.30, 0.16 }}
+    }};
+    std::array<double, 6> scale {{0.16, 0.10, 0.20, 0.14, 0.12, 0.10}};
+    std::array<double, 3> edge {{0.006, 0.000, -0.012}};
+    std::array<double, 4> exposure {{1.00, 0.55, 0.10, 6.00}};
+    double t_nu = 5.0;
+};
+
+static int state_index(const RegimeModel& m, const std::string& state) {
+    for (int i = 0; i < 3; ++i) {
+        if (m.states[i] == state) return i;
+    }
+    throw Error("unknown regime model state: " + state);
+}
+
+template <size_t N>
+static std::array<double, N> parse_numbers(std::istringstream& in, const std::string& key) {
+    std::array<double, N> out {};
+    for (size_t i = 0; i < N; ++i) {
+        if (!(in >> out[i])) throw Error("bad regime model row: " + key);
+    }
+    return out;
+}
+
+template <size_t N>
+static std::string join_array(const std::array<double, N>& a) {
+    std::ostringstream out;
+    for (size_t i = 0; i < N; ++i) {
+        if (i) out << ' ';
+        out << a[i];
+    }
+    return out.str();
+}
+
+template <size_t Rows, size_t Cols>
+static std::string join_matrix(const std::array<std::array<double, Cols>, Rows>& m) {
+    std::ostringstream out;
+    for (size_t r = 0; r < Rows; ++r) {
+        if (r) out << " ; ";
+        out << join_array(m[r]);
+    }
+    return out.str();
+}
+
+template <size_t N>
+static std::string join_words(const std::array<std::string, N>& a) {
+    std::ostringstream out;
+    for (size_t i = 0; i < N; ++i) {
+        if (i) out << ' ';
+        out << a[i];
+    }
+    return out.str();
+}
+
+static RegimeModel load_regime_model(const Args& a) {
+    RegimeModel m;
+    std::string path = a.get("model", a.get("regime-model"));
+    if (path.empty() && std::filesystem::exists("models/momentum_regime.model")) {
+        path = "models/momentum_regime.model";
+    }
+    if (path.empty()) return m;
+
+    std::ifstream file(path);
+    if (!file) throw Error("open failed: " + path);
+    m.source_path = path;
+
+    std::string line;
+    while (std::getline(file, line)) {
+        line = trim(line);
+        if (line.empty() || line[0] == '#') continue;
+        std::istringstream in(line);
+        std::string key;
+        in >> key;
+        if (key == "name") {
+            in >> m.name;
+        } else if (key == "version") {
+            in >> m.version;
+        } else if (key == "states") {
+            for (std::string& s : m.states) in >> s;
+        } else if (key == "features") {
+            for (std::string& f : m.features) in >> f;
+        } else if (key == "t_nu") {
+            in >> m.t_nu;
+        } else if (key == "transition") {
+            std::string state;
+            in >> state;
+            m.transition[state_index(m, state)] = parse_numbers<3>(in, key);
+        } else if (key == "bias") {
+            std::string state;
+            in >> state;
+            m.bias[state_index(m, state)] = parse_numbers<7>(in, key);
+        } else if (key == "neutral_abs") {
+            m.neutral_abs = parse_numbers<2>(in, key);
+        } else if (key == "mean") {
+            std::string state;
+            in >> state;
+            m.mean[state_index(m, state)] = parse_numbers<6>(in, key);
+        } else if (key == "scale") {
+            m.scale = parse_numbers<6>(in, key);
+        } else if (key == "edge") {
+            m.edge = parse_numbers<3>(in, key);
+        } else if (key == "exposure") {
+            m.exposure = parse_numbers<4>(in, key);
+        } else {
+            throw Error("unknown regime model key: " + key);
+        }
+    }
+    return m;
+}
+
+static double bias_value(const std::array<double, 7>& b, const std::array<double, 6>& x) {
+    double v = b[0];
+    for (int i = 0; i < 6; ++i) v += b[i + 1] * x[i];
+    return v;
+}
+
+static void store_regime_model(Db& db, const RegimeModel& m) {
+    auto st = db.prepare(
+        "insert into regime_models(model_name,version,source_path,loaded_at,states,features,"
+        "transition_matrix,bias_terms,emission_means,emission_scales,edge_terms,exposure_terms,t_nu)"
+        " values(?,?,?,current_timestamp,?,?,?,?,?,?,?,?,?)"
+        " on conflict(model_name) do update set"
+        " version=excluded.version, source_path=excluded.source_path, loaded_at=current_timestamp,"
+        " states=excluded.states, features=excluded.features,"
+        " transition_matrix=excluded.transition_matrix, bias_terms=excluded.bias_terms,"
+        " emission_means=excluded.emission_means, emission_scales=excluded.emission_scales,"
+        " edge_terms=excluded.edge_terms, exposure_terms=excluded.exposure_terms, t_nu=excluded.t_nu");
+    st.bind(1, m.name);
+    st.bind(2, m.version);
+    st.bind(3, m.source_path);
+    st.bind(4, join_words(m.states));
+    st.bind(5, join_words(m.features));
+    st.bind(6, join_matrix(m.transition));
+    st.bind(7, join_matrix(m.bias) + " ; neutral_abs " + join_array(m.neutral_abs));
+    st.bind(8, join_matrix(m.mean));
+    st.bind(9, join_array(m.scale));
+    st.bind(10, join_array(m.edge));
+    st.bind(11, join_array(m.exposure));
+    st.bind(12, m.t_nu);
+    st.run();
+}
+
 RegimeOut compute_regime(Db& db, const Args& a, bool store) {
     std::string date = a.get("date");
     if (date.empty()) throw Error("regime filter requires --date");
@@ -136,25 +299,25 @@ RegimeOut compute_regime(Db& db, const Args& a, bool store) {
     }
 
     RegimeOut o;
+    RegimeModel model = load_regime_model(a);
+    o.model_name = model.name;
+    o.model_version = model.version;
+    o.model_path = model.source_path;
     o.f = compute_regime_features(db, date, market);
     auto prev = previous_regime(db, date);
 
-    double fav_bias = 2.5 * o.f.trend + 2.0 * (o.f.breadth - 0.50) - 2.0 * (o.f.vol - 0.20) - 1.5 * o.f.drawdown;
-    double stress_bias = -2.5 * o.f.trend + 2.8 * (o.f.vol - 0.22) + 2.0 * (0.45 - o.f.breadth)
-                       + 2.0 * o.f.drawdown + 1.2 * (o.f.concentration - 0.20);
-    double neutral_bias = -0.35 * std::abs(fav_bias) - 0.20 * std::abs(stress_bias);
-
-    double base[3][3] = {
-        {0.88, 0.10, 0.02},
-        {0.18, 0.70, 0.12},
-        {0.05, 0.25, 0.70}
-    };
+    std::array<double, 6> x {{o.f.trend, o.f.vol, o.f.breadth, o.f.spread, o.f.concentration, o.f.drawdown}};
+    double fav_bias = bias_value(model.bias[0], x);
+    double stress_bias = bias_value(model.bias[2], x);
+    double neutral_bias = bias_value(model.bias[1], x)
+                        + model.neutral_abs[0] * std::abs(fav_bias)
+                        + model.neutral_abs[1] * std::abs(stress_bias);
     double bias[3] = {fav_bias, neutral_bias, stress_bias};
     double trans[3][3];
     for (int i = 0; i < 3; ++i) {
         double row_sum = 0.0;
         for (int j = 0; j < 3; ++j) {
-            trans[i][j] = base[i][j] * std::exp(std::max(-4.0, std::min(4.0, bias[j])));
+            trans[i][j] = model.transition[i][j] * std::exp(std::max(-4.0, std::min(4.0, bias[j])));
             row_sum += trans[i][j];
         }
         for (int j = 0; j < 3; ++j) trans[i][j] /= row_sum;
@@ -165,25 +328,21 @@ RegimeOut compute_regime(Db& db, const Args& a, bool store) {
         for (int j = 0; j < 3; ++j) pred[j] += prev[i] * trans[i][j];
     }
 
-    std::array<std::array<double, 6>, 3> mu {{
-        { 0.12, 0.16, 0.66, 0.12, 0.12, 0.02 },
-        { 0.03, 0.23, 0.50, 0.07, 0.18, 0.06 },
-        {-0.10, 0.38, 0.30, 0.02, 0.30, 0.16 }
-    }};
-    std::array<double, 6> sc {{0.16, 0.10, 0.20, 0.14, 0.12, 0.10}};
-    std::array<double, 6> x {{o.f.trend, o.f.vol, o.f.breadth, o.f.spread, o.f.concentration, o.f.drawdown}};
     double logp[3];
     for (int st = 0; st < 3; ++st) {
         logp[st] = std::log(std::max(pred[st], 1e-12));
-        for (int k = 0; k < 6; ++k) logp[st] += log_t_kernel(x[k], mu[st][k], sc[k], 5.0);
+        for (int k = 0; k < 6; ++k) {
+            logp[st] += log_t_kernel(x[k], model.mean[st][k], model.scale[k], model.t_nu);
+        }
     }
     double mx = std::max({logp[0], logp[1], logp[2]});
     double z = std::exp(logp[0] - mx) + std::exp(logp[1] - mx) + std::exp(logp[2] - mx);
     o.pf = std::exp(logp[0] - mx) / z;
     o.pn = std::exp(logp[1] - mx) / z;
     o.ps = std::exp(logp[2] - mx) / z;
-    o.edge = 0.006 * o.pf + 0.000 * o.pn - 0.012 * o.ps;
-    double raw = o.pf + 0.55 * o.pn + 0.10 * o.ps + 6.0 * o.edge;
+    o.edge = model.edge[0] * o.pf + model.edge[1] * o.pn + model.edge[2] * o.ps;
+    double raw = model.exposure[0] * o.pf + model.exposure[1] * o.pn
+               + model.exposure[2] * o.ps + model.exposure[3] * o.edge;
     double min_exp = a.getd("min-exposure", 0.0);
     double max_exp = a.getd("max-exposure", 1.0);
     o.exposure = std::max(min_exp, std::min(max_exp, raw));
@@ -204,6 +363,7 @@ RegimeOut compute_regime(Db& db, const Args& a, bool store) {
             " expected_momentum_edge=excluded.expected_momentum_edge, exposure=excluded.exposure");
         db.exec("begin");
         try {
+            store_regime_model(db, model);
             feat.bind(1, date);
             feat.bind(2, o.f.trend);
             feat.bind(3, o.f.vol);
@@ -233,6 +393,8 @@ void command_regime_filter(const Args& a) {
     init_schema(db);
     RegimeOut o = compute_regime(db, a, true);
     std::cout << "date\t" << a.get("date") << "\n";
+    std::cout << "model_name\t" << o.model_name << "\nmodel_version\t" << o.model_version
+              << "\nmodel_path\t" << o.model_path << "\n";
     std::cout << "p_favorable\t" << o.pf << "\np_neutral\t" << o.pn << "\np_stress\t" << o.ps
               << "\nexpected_momentum_edge\t" << o.edge << "\nexposure\t" << o.exposure << "\n";
     std::cout << "market_trend\t" << o.f.trend << "\nmarket_vol\t" << o.f.vol

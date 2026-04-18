@@ -1,0 +1,29 @@
+#!/usr/bin/env python3
+import math
+import sys
+from datetime import date, timedelta
+
+out = sys.stdout
+print("date,ticker,open,high,low,close,adj_close,volume,market_cap", file=out)
+
+symbols = "SPY AAA BBB CCC DDD EEE FFF GGG".split()
+drift = [0.0008, 0.0018, 0.0012, -0.0002, 0.0004, 0.0015, 0.0001, 0.0009]
+start = date(2024, 1, 1)
+observations = 0
+
+for offset in range(470):
+    current = start + timedelta(days=offset)
+    if current.weekday() >= 5:
+        continue
+    observations += 1
+    for idx, ticker in enumerate(symbols, start=1):
+        base = 40 + idx * 12
+        wave = 0.04 * math.sin(observations / 11 + idx)
+        price = base * math.exp(drift[idx - 1] * observations) * (1 + wave)
+        volume = 1000000 + idx * 250000
+        market_cap = 3000000000 + idx * 700000000
+        print(
+            f"{current},{ticker},{price * .99:.4f},{price * 1.01:.4f},"
+            f"{price * .98:.4f},{price:.4f},{price:.4f},{volume:.0f},{market_cap:.0f}",
+            file=out,
+        )

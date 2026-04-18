@@ -27,6 +27,11 @@ BUILDING
 
 This builds the ephemeris executable in the source directory.
 
+        make test
+
+This runs a deterministic fixture pipeline through the real command-line
+program and checks expected outputs.
+
         make clean
 
 This removes generated build output.
@@ -39,9 +44,12 @@ SYNOPSIS
         ephemeris sec sync-companyfacts --db DB
         ephemeris prices import --input FILE --db DB
         ephemeris universe build --date DATE --db DB
+        ephemeris universe explain --date DATE --ticker TICKER --db DB
         ephemeris signal momentum --date DATE --db DB
+        ephemeris signal explain --date DATE --ticker TICKER --db DB
         ephemeris regime filter --date DATE --db DB
         ephemeris portfolio build --date DATE --top N --db DB
+        ephemeris portfolio explain --date DATE --db DB
         ephemeris backtest --from DATE --to DATE --db DB
         ephemeris report --date DATE --db DB
 
@@ -114,6 +122,10 @@ tries to combine the latest SEC share count with adjusted price.
 Parquet is intentionally outside the executable.  Convert Parquet upstream
 with DuckDB or Arrow tooling and pass Ephemeris CSV.
 
+A deterministic fixture can be generated with:
+
+        scripts/make-fixture-prices > /tmp/ephemeris-prices.csv
+
 
 UNIVERSE
 
@@ -129,6 +141,13 @@ Build a point-in-time universe:
 
 Universe rows are materialized by date.  This prevents later signals and
 backtests from silently recomputing eligibility with current metadata.
+
+Explain a stored universe decision:
+
+        ./ephemeris universe explain \
+                --date 2026-04-01 \
+                --ticker AAPL \
+                --db data/ephemeris.db
 
 
 MOMENTUM
@@ -148,6 +167,13 @@ The default score is:
         0.20 times 3-month momentum excluding the most recent month
         minus 0.25 times 3-month realized volatility
 
+Explain a stored signal and the prices used in the score:
+
+        ./ephemeris signal explain \
+                --date 2026-04-01 \
+                --ticker AAPL \
+                --db data/ephemeris.db
+
 
 REGIME FILTER
 
@@ -156,6 +182,7 @@ Estimate current regime probabilities:
         ./ephemeris regime filter \
                 --date 2026-04-01 \
                 --market SPY \
+                --model models/momentum_regime.model \
                 --db data/ephemeris.db
 
 The regime layer is a small Markov throttle:
@@ -176,6 +203,14 @@ The stored output is:
         expected_momentum_edge
         exposure
 
+Model parameters are loaded from a plain text model file.  The default tracked
+model is:
+
+        models/momentum_regime.model
+
+When a regime output is stored, Ephemeris also stores model metadata in the
+regime_models table.
+
 
 PORTFOLIO
 
@@ -190,6 +225,12 @@ Build target weights:
 
 The first portfolio is long-only and equal-weighted after the regime exposure
 throttle.  Unused exposure is written as CASH.
+
+Explain stored target weights:
+
+        ./ephemeris portfolio explain \
+                --date 2026-04-01 \
+                --db data/ephemeris.db
 
 
 BACKTEST
@@ -229,8 +270,21 @@ FILES
         README
                 Plain text project documentation.
 
-        src/ephemeris.cpp
-                The complete command-line implementation.
+        docs/DATA-REALISM
+                Data realism priorities and staging tables.
+
+        models/momentum_regime.model
+                Default regime throttle parameters.
+
+        scripts/make-fixture-prices
+                Deterministic sample price generator for tests and examples.
+
+        src
+                Focused C++ translation units for CLI, database, SEC, prices,
+                universe, signals, regime, portfolio, backtest, and reports.
+
+        tests/smoke.sh
+                End-to-end command smoke test used by make test.
 
         ephemeris.db
                 Default SQLite database path if --db is omitted.

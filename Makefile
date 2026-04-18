@@ -20,6 +20,9 @@ all: ephemeris
 ephemeris: $(SRCS)
 	$(CXX) $(CXXFLAGS) $(SRCS) -o $@ $(LDLIBS)
 
+test: ephemeris
+	tests/smoke.sh ./ephemeris
+
 install: ephemeris
 	install -d $(DESTDIR)$(BINDIR)
 	install -m 0755 ephemeris $(DESTDIR)$(BINDIR)/ephemeris
@@ -28,4 +31,4 @@ clean:
 	rm -f ephemeris
 	rm -rf ephemeris.dSYM
 
-.PHONY: all install clean
+.PHONY: all install clean test

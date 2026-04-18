@@ -203,6 +203,7 @@ std::vector<Signal> compute_momentum(Db& db, const std::string& date,
                                      const std::vector<int>& lookbacks,
                                      int skip_days, bool store);
 void command_signal_momentum(const Args& a);
+void command_signal_explain(const Args& a);
 
 struct RegimeFeatures {
     double trend = 0.0;
@@ -215,6 +216,9 @@ struct RegimeFeatures {
 
 struct RegimeOut {
     RegimeFeatures f;
+    std::string model_name;
+    std::string model_version;
+    std::string model_path;
     double pf = 0.0;
     double pn = 0.0;
     double ps = 0.0;
@@ -229,6 +233,8 @@ double exposure_for_date(Db& db, const std::string& date);
 std::map<std::string, double> portfolio_weights(Db& db, const std::string& date, int topn,
                                                 double exposure, double max_weight);
 void command_portfolio_build(const Args& a);
+void command_universe_explain(const Args& a);
+void command_portfolio_explain(const Args& a);
 void command_backtest(const Args& a);
 void command_report(const Args& a);
 
