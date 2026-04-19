@@ -33,7 +33,12 @@ void import_prices(const Args& a) {
         "insert into securities(ticker,security_type,active,first_seen,last_seen)"
         " values(?,'common',1,?,?)"
         " on conflict(ticker) do update set active=1,"
-        " first_seen=coalesce(securities.first_seen,excluded.first_seen), last_seen=excluded.last_seen");
+        " first_seen=case"
+        " when securities.first_seen is null or excluded.first_seen<securities.first_seen then excluded.first_seen"
+        " else securities.first_seen end,"
+        " last_seen=case"
+        " when securities.last_seen is null or excluded.last_seen>securities.last_seen then excluded.last_seen"
+        " else securities.last_seen end");
 
     long long rows = 0;
     db.exec("begin");
