@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+import argparse
+import csv
+import json
+import sqlite3
+import sys
+import time
+import urllib.parse
+import urllib.request
+from datetime import date, datetime, timedelta, timezone
+
+
+def epoch(d):
+    return int(datetime(d.year, d.month, d.day, tzinfo=timezone.utc).timestamp())
+
+
+def parse_date(s):
+    return date.fromisoformat(s)
+
+
+def yahoo_symbol(ticker):
+    return ticker.replace(".", "-").upper()
+
+
+def clean_ticker(ticker):
+    if not ticker:
+        return False
+    allowed = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-")
+    return all(c in allowed for c in ticker)
+
+
+def db_tickers(path, exchanges, limit):
+    con = sqlite3.connect(path)
+    where = [
+        "ticker is not null",
+        "ticker <> ''",
+        "exchange in (%s)" % ",".join("?" for _ in exchanges),
+        "upper(name) not like '%WARRANT%'",
+        "upper(name) not like '% RIGHT%'",
+        "upper(name) not like '% UNIT%'",
+        "upper(name) not like '% PREFERRED%'",
+        "upper(name) not like '%PREFERENCE%'",
+        "upper(name) not like '% ETF%'",
+        "upper(name) not like '% ETN%'",
+        "upper(name) not like '% FUND%'",
+        "upper(name) not like '%ACQUISITION CORP%'",
+        "upper(name) not like '%ACQUISITION CO%'",
+        "upper(name) not like '%BLANK CHECK%'",
+    ]
+    sql = "select ticker from companies where " + " and ".join(where) + " order by ticker"
+    if limit:
+        sql += " limit %d" % limit
+    rows = [r[0].upper() for r in con.execute(sql, list(exchanges))]
+    con.close()
+    return [t for t in rows if clean_ticker(t)]
+
+
+def explicit_tickers(s):
+    out = []
+    for item in s.split(","):
+        t = item.strip().upper()
+        if t and clean_ticker(t):
+            out.append(t)
+    return out
+
+
+def fetch_chart(ticker, start, end):
+    params = {
+        "period1": str(epoch(start)),
+        "period2": str(epoch(end + timedelta(days=1))),
+        "interval": "1d",
+        "events": "history",
+        "includeAdjustedClose": "true",
+    }
+    url = "https://query1.finance.yahoo.com/v8/finance/chart/%s?%s" % (
+        urllib.parse.quote(yahoo_symbol(ticker)),
+        urllib.parse.urlencode(params),
+    )
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        root = json.load(resp)
+    chart = root.get("chart", {})
+    err = chart.get("error")
+    if err:
+        raise RuntimeError(err.get("description") or str(err))
+    results = chart.get("result") or []
+    if not results:
+        return []
+    result = results[0]
+    stamps = result.get("timestamp") or []
+    quote = (result.get("indicators", {}).get("quote") or [{}])[0]
+    adj = (result.get("indicators", {}).get("adjclose") or [{}])[0].get("adjclose") or []
+    rows = []
+    for i, ts in enumerate(stamps):
+        try:
+            o = quote.get("open", [])[i]
+            h = quote.get("high", [])[i]
+            l = quote.get("low", [])[i]
+            c = quote.get("close", [])[i]
+            v = quote.get("volume", [])[i]
+            a = adj[i] if i < len(adj) else c
+        except IndexError:
+            continue
+        if None in (o, h, l, c, a, v):
+            continue
+        day = datetime.fromtimestamp(ts, timezone.utc).date().isoformat()
+        rows.append([day, ticker, o, h, l, c, a, int(v), ""])
+    return rows
+
+
+def main():
+    p = argparse.ArgumentParser(description="write Ephemeris price CSV from Yahoo chart data")
+    p.add_argument("--db", required=True, help="Ephemeris SQLite database to read SEC tickers from")
+    p.add_argument("--output", required=True, help="CSV output path, or - for stdout")
+    p.add_argument("--from", dest="start", default="2024-01-01", help="start date")
+    p.add_argument("--to", dest="end", default=date.today().isoformat(), help="end date")
+    p.add_argument("--limit", type=int, default=250, help="maximum DB tickers to fetch; 0 means no limit")
+    p.add_argument("--exchanges", default="Nasdaq,NYSE,CBOE", help="comma-separated SEC exchanges")
+    p.add_argument("--tickers", default="", help="comma-separated explicit tickers; skips DB selection")
+    p.add_argument("--sleep", type=float, default=0.10, help="seconds to sleep between requests")
+    args = p.parse_args()
+
+    start = parse_date(args.start)
+    end = parse_date(args.end)
+    if end < start:
+        raise SystemExit("--to must be on or after --from")
+
+    if args.tickers:
+        tickers = explicit_tickers(args.tickers)
+    else:
+        exchanges = [x.strip() for x in args.exchanges.split(",") if x.strip()]
+        tickers = db_tickers(args.db, exchanges, args.limit if args.limit > 0 else 0)
+
+    out = sys.stdout if args.output == "-" else open(args.output, "w", newline="")
+    try:
+        writer = csv.writer(out)
+        writer.writerow(["date", "ticker", "open", "high", "low", "close", "adj_close", "volume", "market_cap"])
+        ok = 0
+        rows = 0
+        for n, ticker in enumerate(tickers, 1):
+            try:
+                data = fetch_chart(ticker, start, end)
+            except Exception as exc:
+                print("skip\t%s\t%s" % (ticker, exc), file=sys.stderr)
+                data = []
+            if data:
+                writer.writerows(data)
+                ok += 1
+                rows += len(data)
+            print("ticker\t%d\t%s\trows\t%d" % (n, ticker, len(data)), file=sys.stderr)
+            if args.sleep > 0:
+                time.sleep(args.sleep)
+        print("fetched_tickers\t%d" % ok, file=sys.stderr)
+        print("fetched_rows\t%d" % rows, file=sys.stderr)
+    finally:
+        if out is not sys.stdout:
+            out.close()
+
+
+if __name__ == "__main__":
+    main()

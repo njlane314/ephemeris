@@ -33,7 +33,9 @@ void command_report(const Args& a) {
     while (s.step()) std::cout << s.i64(0) << '\t' << s.text(1) << '\t' << s.number(2) << "\n";
 
     std::cout << "portfolio\n";
-    auto p = db.prepare("select ticker,weight from portfolio_targets where date=? order by weight desc,ticker limit 20");
+    auto p = db.prepare(
+        "select ticker,weight from portfolio_targets where date=?"
+        " order by case when ticker='CASH' then 1 else 0 end, rank, ticker limit 20");
     p.bind(1, date);
     while (p.step()) std::cout << p.text(0) << '\t' << p.number(1) << "\n";
 

@@ -101,8 +101,11 @@ void command_portfolio_build(const Args& a) {
 
     std::cout << "date\t" << date << "\nexposure\t" << exposure << "\nholdings\t" << weights.size() << "\n";
     std::cout << "ticker\tweight\n";
-    for (auto& kv : weights) std::cout << kv.first << '\t' << kv.second << "\n";
-    std::cout << "CASH\t" << std::max(0.0, 1.0 - used) << "\n";
+    auto out = db.prepare(
+        "select ticker,weight from portfolio_targets where date=?"
+        " order by case when ticker='CASH' then 1 else 0 end, rank, ticker");
+    out.bind(1, date);
+    while (out.step()) std::cout << out.text(0) << '\t' << out.number(1) << "\n";
 }
 
 } // namespace eph

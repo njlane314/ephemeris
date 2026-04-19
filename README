@@ -222,6 +222,25 @@ tries to combine the latest SEC share count with adjusted price.
 Parquet is intentionally outside the executable.  Convert Parquet upstream
 with DuckDB or Arrow tooling and pass Ephemeris CSV.
 
+For a small real-data bootstrap, fetch adjusted daily prices from Yahoo chart
+data for tickers already present in the SEC database:
+
+        scripts/fetch-yahoo-prices \
+                --db data/ephemeris-sec.db \
+                --output data/raw/yahoo-prices.csv \
+                --from 2024-01-01 \
+                --to 2026-04-17 \
+                --limit 250
+
+        ./ephemeris prices import \
+                --input data/raw/yahoo-prices.csv \
+                --db data/ephemeris-sec.db
+
+The script writes Ephemeris CSV with adjusted close and leaves market_cap
+empty.  Use --tickers AAPL,MSFT,NVDA,SPY for an explicit list, or raise
+--limit for a broader database run.  Historical market capitalization requires
+a separate vendor feed or SEC share facts plus a strict point-in-time policy.
+
 A deterministic fixture can be generated with:
 
         scripts/make-fixture-prices > /tmp/ephemeris-prices.csv

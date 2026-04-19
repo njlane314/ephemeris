@@ -44,7 +44,7 @@ void command_audit_database(const Args& a) {
               << scalar_i64(db,
                   "select count(*) from universe u"
                   " left join prices p on p.ticker=u.ticker and p.date<=u.date"
-                  " where p.ticker is null")
+                  " where u.eligible=1 and p.ticker is null")
               << "\n";
     std::cout << "issue_signals_without_eligible_universe\t"
               << scalar_i64(db,
